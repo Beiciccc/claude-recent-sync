@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-recent-sync"
+version = "0.1.0"
+description = "Mirror Claude Desktop Code Recents between local Claude accounts on the same machine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Beiciccc" }
+]
+keywords = ["claude", "claude-code", "desktop", "sessions", "sync"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Utilities"
+]
+
+[project.scripts]
+claude-recent-sync = "claude_recent_sync.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_recent_sync"]
+
