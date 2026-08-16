@@ -12,3 +12,6 @@ build/
 .coverage
 htmlcov/
 
+.playwright-cli/
+frontend/node_modules/
+output/

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#0b1510" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="214" fill="#17211c"/>
+  <rect x="72" y="72" width="880" height="880" rx="190" fill="none" stroke="#33443a" stroke-width="4"/>
+  <g filter="url(#shadow)">
+    <rect x="194" y="218" width="392" height="494" rx="62" fill="#c9d7d0"/>
+    <rect x="222" y="250" width="336" height="430" rx="42" fill="#edf3f0"/>
+    <path d="M286 356h208M286 418h150M286 560h120" fill="none" stroke="#899b92" stroke-width="24" stroke-linecap="round"/>
+    <rect x="438" y="318" width="392" height="494" rx="62" fill="#ffffff"/>
+    <rect x="466" y="350" width="336" height="430" rx="42" fill="#f5f8f6"/>
+    <path d="M530 456h208M530 518h150M530 660h120" fill="none" stroke="#9aa9a1" stroke-width="24" stroke-linecap="round"/>
+  </g>
+  <circle cx="512" cy="526" r="118" fill="#17211c" stroke="#dff2ea" stroke-width="10"/>
+  <path d="M410 495h164l-46-46M614 557H450l46 46" fill="none" stroke="#58d4aa" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="398" cy="495" r="15" fill="#ef8a69"/>
+  <circle cx="626" cy="557" r="15" fill="#ef8a69"/>
+</svg>

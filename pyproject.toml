@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-recent-sync"
-version = "0.1.0"
-description = "Mirror Claude Desktop Code Recents between local Claude accounts on the same machine."
+version = "0.2.0"
+description = "Visual, backup-first Claude Desktop Code Recents synchronization for multiple local accounts."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -24,7 +24,7 @@ classifiers = [
 
 [project.scripts]
 claude-recent-sync = "claude_recent_sync.cli:main"
+claude-recent-sync-ui = "claude_recent_sync.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_recent_sync"]
-

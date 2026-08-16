@@ -4,7 +4,6 @@ import argparse
 import dataclasses
 import hashlib
 import json
-import os
 import shutil
 import sys
 import time
@@ -620,6 +619,18 @@ def command_watch(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
+def command_ui(args: argparse.Namespace) -> int:
+    from .server import run_ui
+
+    return run_ui(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_browser,
+        claude_dir=args.claude_dir,
+        projects_dir=args.projects_dir,
+    )
+
+
 def directory_signature(directory: Path) -> str:
     h = hashlib.sha256()
     for path in local_json_files(directory):
@@ -658,7 +669,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="claude-recent-sync",
         description="Mirror Claude Desktop Code Recents between local Claude accounts.",
     )
-    parser.add_argument("--version", action="version", version="claude-recent-sync 0.1.0")
+    parser.add_argument("--version", action="version", version="claude-recent-sync 0.2.0")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List detected Claude accounts and profile directories.")
@@ -696,6 +707,13 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--allow-empty-source", action="store_true")
     watch_parser.add_argument("--backup-root", type=Path)
     watch_parser.set_defaults(func=command_watch)
+
+    ui_parser = subparsers.add_parser("ui", help="Launch the local visual interface.")
+    add_common_path_args(ui_parser)
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=47631)
+    ui_parser.add_argument("--no-browser", action="store_true")
+    ui_parser.set_defaults(func=command_ui)
 
     return parser
 
