@@ -1,43 +1,29 @@
 # Claude Recent Sync
 
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-111111?logo=apple)](https://www.apple.com/macos/)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-16735e.svg)](LICENSE)
 
 [简体中文](docs/README.zh-CN.md)
 
-A local, backup-first macOS app for comparing and mirroring Claude Desktop Code Recents between accounts on the same Mac.
+Choose a **source account** and a **target account** to transfer Claude Desktop Code session indexes, conversation context, and project memory. Use the same interface on one Mac or move an encrypted account package to another Mac.
 
-![Claude Recent Sync dashboard](docs/dashboard.png)
+![Account-based context transfer](docs/dashboard.png)
 
-> [!IMPORTANT]
-> Claude Recent Sync is an unofficial local utility and is not affiliated with Anthropic. It mirrors the local Claude Desktop Code Recents index only. It cannot update Claude.ai web or mobile conversation history, cloud memory, or any server-side account data.
+## Version 0.3
 
-## Why It Exists
+- Accounts are shown by email, separately from their organization/workspace profiles.
+- Ordinary `Claude` and third-party `Claude-3p` deployments have distinct identities.
+- The source must be selected explicitly; modification time never silently chooses a different source.
+- Session comparison and memory comparison show what will change.
+- A preview is bound to exact account/profile identities. Changed data requires a refreshed preview.
+- Encrypted `.crsync` packages carry the selected account's indexed conversations, linked prior branches, subagents, associated artifacts, file history, and project memory.
+- Cross-Mac import maps home directories automatically and supports explicit project path overrides.
+- Target backups, write verification, delayed checks, and failed-import rollback are included.
 
-Claude Desktop keeps Code sidebar entries in account-specific local directories. After switching accounts, existing Claude Code transcripts can remain on disk while their Recents entries are missing or stale for the newly signed-in account.
+## Install
 
-Claude Recent Sync treats one local account as the authoritative **source**, previews the difference, backs up the **target**, and makes the target index match the source. The mirror includes additions, updates, branch changes, and target-only deletions; it is not limited to a fixed number of sessions.
-
-## Highlights
-
-- Visual discovery of local accounts and profile/organization directories.
-- Session-by-session comparison of titles, branch IDs, turn counts, activity times, and working directories.
-- One action performs source validation, conflict handling, backup, mirroring, transcript checks, and a delayed stability check.
-- Stale target-account Claude backends are stopped only when they could rewrite an older session branch.
-- Timestamped target backups with restore support from the History tab.
-- Optional synchronization after an account switch and optional launch at login.
-- Local service bound to `127.0.0.1`; no credentials, cookies, or transcript bodies are copied.
-
-## Requirements
-
-- macOS 12 or newer
-- Python 3.10 or newer (`python3 --version`)
-- Claude Desktop and local Claude Code session data on the same Mac
-
-Node.js is required only for frontend development, not for the installed app.
-
-## Quick Start
+Requirements: macOS 12+, Python 3.9+, and an `openssl enc` implementation supporting PBKDF2. The current interface is in Simplified Chinese. Node.js is needed only to rebuild the frontend.
 
 ```bash
 git clone https://github.com/Beiciccc/claude-recent-sync.git
@@ -46,160 +32,119 @@ cd claude-recent-sync
 open "$HOME/Applications/Claude Recent Sync.app"
 ```
 
-The installer creates `~/Applications/Claude Recent Sync.app`, bundles the Python modules and compiled interface, and applies a local ad-hoc signature. It does not require administrator access or Node.js.
+The app opens its local interface at `http://127.0.0.1:47631`. The installer bundles the modules and built interface, uses the selected local Python interpreter, and applies an ad-hoc signature.
 
-In the app:
+## Transfer Between Local Accounts
 
-1. Sign in to the account that should receive the local Recents entries.
-2. Confirm that **上个账号 · 来源 (Previous / Source)** contains the authoritative sessions and **当前账号 · 目标 (Current / Target)** is the newly signed-in account.
-3. Review the added, updated, deleted, and unchanged rows.
-4. Select **开始安全同步 (Start safe sync)**.
-5. Keep the app open until the delayed verification finishes.
+1. Select the email under **来源账号 (Source account)** and **目标账号 (Target account)**.
+2. Select the organization/workspace under each account. Check the ordinary/third-party mode label.
+3. Review **会话比较 (Sessions)** and **记忆比较 (Memory)**.
+4. Click **同步到目标账号 (Sync to target account)**.
+5. Wait for validation and the delayed check to finish.
 
-> [!CAUTION]
-> Mirroring is directional. Target-only `local_*.json` entries are deleted so the target matches the source. A complete target-index backup is created before every write, but you should still verify the selected direction before starting.
+The target session list becomes a mirror of the selected source list, including target-only deletions. The source remains unchanged.
 
-To upgrade, pull the repository and run the installer again:
+Claude's transcripts and project memory are shared by project on the same Mac, not isolated per account. Local transfer verifies and reconnects those existing records; it does not invent separate historical memory versions for each account.
 
-```bash
-git pull --ff-only
-./scripts/install-macos-app.sh
-```
+### Account Emails
 
-## What Is Synced
+The app reads exact account UUID/email pairs from the local CLI login metadata and its known configuration backups. Discovered addresses are remembered locally across account switches. It does not guess identity from conversation text or decrypt credential caches.
 
-Claude Desktop stores Code Recents indexes under:
+Accounts without reliable email metadata are marked **待绑定账号 (Email not linked)**. Select one and use the pencil beside its source/target heading to enter its email. Manual labels can be cleared in the same dialog. They only change the display label, not Claude login state or the underlying sync destination. The same email in ordinary and third-party modes remains two distinct destinations.
 
-```text
-~/Library/Application Support/Claude/claude-code-sessions/<account-id>/<profile-id>/local_*.json
-```
+Mappings are stored privately in `~/.claude/claude-recent-sync/account-emails.json`. The selected source email travels inside the encrypted migration package; packages from earlier versions without an email can be labeled after import.
 
-Each small index references a durable Claude Code transcript through `cliSessionId`, usually located under:
+## Move to Another Mac
 
-```text
-~/.claude/projects/.../<cliSessionId>.jsonl
-```
+On the source Mac:
 
-Claude Recent Sync mirrors the index files and verifies that their referenced transcripts exist. It does **not** copy transcript JSONL files, OAuth tokens, cookies, credentials, Claude.ai conversations, or cloud memory.
+1. Select the source account and its workspace.
+2. Choose whether to include global memory.
+3. Click **导出来源账号 (Export source account)**.
+4. Record the migration passphrase, then download the encrypted `.crsync` file.
 
-## Safe Sync Workflow
+Move that file through a channel of your choice, such as a removable drive, AirDrop, or iCloud Drive. The application does not automatically upload it anywhere.
 
-Each visual sync performs the following steps:
+On the destination Mac:
 
-1. Rediscover the current account and the selected source account.
-2. Resolve the active profile/organization directory for each account.
-3. Validate every source index and its transcript reference.
-4. Compare each source and target session.
-5. Stop only stale target backends that reference a branch being replaced or removed.
-6. Back up the complete target index directory.
-7. Mirror additions, updates, and deletions.
-8. Validate the resulting target and compare it with the source.
-9. Wait for Claude Desktop to settle, verify again, and reconcile once if needed.
+1. Install this app and sign in to the intended Claude account. Open Code once so the account/workspace can be discovered.
+2. Click **导入迁移包 (Import package)**, select the file, and enter its passphrase.
+3. The imported account snapshot becomes the source. Select the destination account and workspace.
+4. Review the session and memory differences. Correct any missing project paths in **项目路径映射 (Project path mapping)**.
+5. Click **同步到目标账号**.
 
-An empty source is rejected by default to prevent accidental target clearing.
+Opening a package only decrypts and previews it. Target records are changed only by the sync action.
 
-## Automatic Account Switches
+### Migration Scope
 
-The Settings tab provides two opt-in controls:
+| Data | Behavior |
+| --- | --- |
+| Desktop Code indexes | Mirror into the explicitly selected target account/profile |
+| Main and linked prior transcripts | Copy with runtime path mapping; recorded message bodies remain intact |
+| Subagent transcripts and related artifacts | Include those linked to selected sessions |
+| Unrelated sessions in the same project | Excluded from export unless referenced by the selected sessions |
+| Project memory | Include the relevant shared project memory; imported memory directories mirror the source |
+| Global memory | Optional; included global files overwrite matching target files |
+| Existing unrelated target transcripts | Retained |
+| Project code, documents, project-level `CLAUDE.md` | Continue using your existing project transfer, Git, or iCloud setup |
+| Login credentials, cookies, Keychain, provider settings | Not transferred |
+| Claude.ai web/mobile conversations or cloud memory | Not transferred |
 
-- **账号切换同步 (Account-switch sync)** tracks the active account and uses the account active immediately before a switch as the next source.
-- **登录时运行 (Run at login)** installs a user LaunchAgent that starts the local service after macOS login.
+Global memory can include `~/.claude/CLAUDE.md`, rules, commands, agents, skills, and an existing local context bridge. Project and global memory can affect other accounts using the same Mac. The interface shows this shared scope.
 
-Both options are disabled by default. Review the first few account switches manually before enabling unattended synchronization.
+Packages preserve local data, not running processes, unsaved messages, or remote connector authorization. Custom tools and dependencies may need to be configured on the destination.
+
+## Encryption and Integrity
+
+Packages use OpenSSL/LibreSSL AES-256-CBC with PBKDF2 and an HMAC-SHA256 envelope. The passphrase is supplied to the crypto process through standard input and is not written to settings or task history.
+
+Import checks the authentication tag before decryption, rejects unsafe archive paths and links, verifies the file manifest, and limits unpacked payloads to 32 GiB. Ordinary and third-party authentication state is kept on the destination machine.
+
+After opening a package, its decrypted working copy is kept in the app's private local state directory. Protect that directory and the exported packages as you would other Claude data.
 
 ## Backups and Restore
 
-Backups and app state are stored locally:
+The **运行记录 (History)** tab lists operations and backups. Cross-Mac import backs up both the target indexes and every context or memory file it changes. A failed write or validation rolls those changes back. Restoring a backup creates another backup of the current state first.
+
+Default locations:
 
 ```text
 ~/.claude/backups/claude-recent-sync/
-~/.claude/claude-recent-sync/
+~/.claude/claude-recent-sync/exports/
+~/.claude/claude-recent-sync/imports/
 ```
 
-Open the **运行记录 (History)** tab to inspect prior runs, reveal a backup in Finder, or restore it. Restoring also backs up the target's current state before replacing it.
+The ordinary-mode account-switch watcher and launch-at-login controls remain optional and off by default. Manual transfers always use the accounts explicitly selected in the interface.
 
-## Command Line
+## CLI Compatibility
 
-Run the CLI directly from the repository:
+The existing index-only commands remain available:
 
 ```bash
 ./bin/claude-recent-sync list
 ./bin/claude-recent-sync diff --from previous --to current
 ./bin/claude-recent-sync mirror --from previous --to current --dry-run
-./bin/claude-recent-sync mirror --from previous --to current
 ./bin/claude-recent-sync doctor current
 ./bin/claude-recent-sync ui
 ```
 
-Install Python entry points for shell-wide use:
-
-```bash
-python3 -m pip install -e .
-claude-recent-sync ui
-```
-
-The polling CLI is also available:
-
-```bash
-claude-recent-sync watch --from previous --to current --interval 10
-```
-
-Use `--no-delete` for a union-style copy that preserves target-only indexes. Use explicit account IDs or unique prefixes when aliases are ambiguous:
-
-```bash
-claude-recent-sync mirror \
-  --from <source-account-prefix> \
-  --to <target-account-prefix> \
-  --dry-run
-```
-
-## Account Resolution
-
-`current` is read from:
-
-```text
-~/Library/Application Support/Claude/cowork-enabled-cli-ops.json
-```
-
-For manual commands, `previous` resolves to the non-current account with the newest Code Recents index. The automatic account-switch watcher separately records the account that was active immediately before the switch.
-
-If an account contains multiple profile or organization directories, the app selects the profile with session files and the newest local activity. CLI users can override this with `--source-profile` and `--target-profile`.
-
-## Troubleshooting
-
-- **Current account is not detected:** open Claude Desktop, complete sign-in, and refresh the dashboard.
-- **Source validation fails:** confirm that the referenced transcript still exists under `~/.claude/projects`; invalid or missing source references block writes.
-- **The app does not open a browser:** run `./bin/claude-recent-sync-ui` and open `http://127.0.0.1:47631`.
-- **Port `47631` is occupied:** run `./bin/claude-recent-sync-ui --port 47632`.
-- **Installed-app startup fails:** inspect `~/.claude/claude-recent-sync/launcher.log`.
-
-## Privacy and Limitations
-
-- All synchronization is local to one Mac. The app does not upload session data to GitHub, Anthropic, or another service.
-- Indexes and backups contain local metadata such as titles, paths, account/profile IDs, and timestamps. Backups remain on disk and should be protected like other local Claude data.
-- The tool depends on Claude Desktop's current, undocumented local storage layout. A future Claude Desktop update may require a compatibility update.
-- Only macOS is supported by the app installer and process-management workflow.
-- The current visual interface is in Simplified Chinese; the CLI remains usable from an English shell.
-- This tool cannot make local Recents visible on claude.ai or a phone; those surfaces use server-side data controlled by Anthropic.
+CLI aliases retain their original meaning. The visual account selector and encrypted migration packages use explicit account/profile identities instead.
 
 ## Development
 
-Run backend tests:
-
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
-
-Rebuild the React interface:
-
-```bash
 cd frontend
 npm ci
 npm run build
 ```
 
-The production bundle is written to `src/claude_recent_sync/web_dist` and served by the Python standard-library HTTP server.
+The production bundle is stored in `src/claude_recent_sync/web_dist`. Development servers can use `--claude-dir`, `--projects-dir`, and `--state-dir` to isolate all test data and backups.
 
-## License
+Tests cover email detection and persistence, account/profile selection, deployment separation, stale previews, transcript and memory integrity, package authentication, archive path rejection, path mapping, rollback, restore, and the HTTP export/import flow.
 
-[MIT](LICENSE)
+## Limits
+
+This is an unofficial utility, not affiliated with Anthropic. It relies on Claude Desktop's local storage layout, which may change with future releases. Back up important records, verify the selected direction, and finish active Claude work before replacing its local records.
+
+[MIT License](LICENSE)

@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-recent-sync"
-version = "0.2.0"
-description = "Visual, backup-first Claude Desktop Code Recents synchronization for multiple local accounts."
+version = "0.3.0"
+description = "Account-based Claude Desktop context and memory transfer with encrypted Mac migration packages."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = "MIT"
 authors = [
   { name = "Beiciccc" }
@@ -28,3 +28,4 @@ claude-recent-sync-ui = "claude_recent_sync.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_recent_sync"]
+exclude = ["**/* *.py"]

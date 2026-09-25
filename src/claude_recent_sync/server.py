@@ -4,6 +4,7 @@ import argparse
 import json
 import mimetypes
 import plistlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -21,11 +22,12 @@ from typing import Any
 
 from . import __version__
 from .cli import ClaudeLayout, SyncError, default_claude_dir, default_projects_dir
+from .bundles import MAX_BYTES, export_bundle, open_bundle, private_dir
+from .transfers import AccountTransfers, restore_import
 from .workflow import (
     HistoryStore,
     JsonStore,
     app_state_dir,
-    dashboard_snapshot,
     iso_now,
     list_backups,
     restore_backup_workflow,
@@ -150,6 +152,9 @@ class JobManager:
             if error is None and result is not None:
                 job["status"] = result.get("status", "success")
                 job["result"] = result
+                for step in job["steps"]:
+                    if step["state"] == "running":
+                        step["state"] = "completed"
                 self.history.append(result | {"jobId": job_id, "automatic": job["automatic"]})
             else:
                 job["status"] = "failed"
@@ -178,6 +183,22 @@ class JobManager:
                 )
             if self.running_id == job_id:
                 self.running_id = None
+
+    def start_task(self, operation, run) -> str:
+        with self.lock:
+            if self.running_id:
+                raise SyncError("另一个任务正在运行，请等待完成。")
+            job_id = self._new_job(operation, automatic=False)["id"]
+
+        def worker():
+            try:
+                result = run(lambda *args: self._progress(job_id, *args))
+                self._finish(job_id, result, None)
+            except Exception as exc:
+                self._finish(job_id, None, exc)
+
+        threading.Thread(target=worker, name=f"account-{job_id[:8]}", daemon=True).start()
+        return job_id
 
     def start_sync(
         self,
@@ -222,11 +243,17 @@ class JobManager:
 
         def worker() -> None:
             try:
-                result = restore_backup_workflow(
-                    self.layout,
-                    backup_id,
-                    progress=lambda *args: self._progress(job_id, *args),
-                )
+                from .workflow import resolve_backup
+                directory, manifest = resolve_backup(self.layout, backup_id)
+                if manifest.get("kind") == "account-import":
+                    self._progress(job_id, "restore", "恢复账号与记忆", "running", None)
+                    result = restore_import(directory, self.layout)
+                else:
+                    result = restore_backup_workflow(
+                        self.layout,
+                        backup_id,
+                        progress=lambda *args: self._progress(job_id, *args),
+                    )
                 self._finish(job_id, result, None)
             except Exception as exc:
                 self._finish(job_id, None, exc)
@@ -304,29 +331,41 @@ class AutoSyncWatcher:
 
 
 class AppContext:
-    def __init__(self, layout: ClaudeLayout, *, port: int) -> None:
+    def __init__(self, layout: ClaudeLayout, *, port: int, state_dir: Path | None = None) -> None:
         self.layout = layout
         self.port = port
         self.csrf_token = secrets.token_urlsafe(32)
+        self.state_dir = private_dir(state_dir or app_state_dir())
+        if state_dir is not None:
+            layout.backup_root = self.state_dir / "backups"
         self.settings = SettingsStore()
-        self.history = HistoryStore()
+        self.settings.store = JsonStore(self.state_dir / "settings.json")
+        self.history = HistoryStore(self.state_dir / "history.jsonl")
         self.jobs = JobManager(layout, self.history)
+        self.transfers = AccountTransfers(layout, self.state_dir)
         self.watcher = AutoSyncWatcher(layout, self.jobs, self.settings)
         current = layout.active_account_id()
         if current and not self.settings.get().get("lastActiveAccountId"):
             self.settings.update({"lastActiveAccountId": current})
 
     def state(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        source_value = first_query_value(query, "source", "previous")
-        target_value = first_query_value(query, "target", "current")
+        source_value = first_query_value(query, "source", None)
+        target_value = first_query_value(query, "target", None)
         source_profile = first_query_value(query, "sourceProfile", None)
         target_profile = first_query_value(query, "targetProfile", None)
-        snapshot = dashboard_snapshot(
-            self.layout,
-            source_value=source_value,
-            target_value=target_value,
+        try:
+            mappings = json.loads(first_query_value(query, "mappings", "{}"))
+            if not isinstance(mappings, dict):
+                raise ValueError()
+        except (ValueError, TypeError) as exc:
+            raise SyncError("项目路径映射无效。") from exc
+        snapshot = self.transfers.preview(
+            source_key=source_value,
+            target_key=target_value,
             source_profile=source_profile,
             target_profile=target_profile,
+            include_global=first_query_value(query, "includeGlobal", "true") == "true",
+            mappings=mappings,
         )
         return snapshot | {
             "csrfToken": self.csrf_token,
@@ -334,6 +373,44 @@ class AppContext:
             "settings": self.settings.get(),
             "latestJob": self.jobs.latest(),
         }
+
+    def export_account(self, body):
+        key = str(body.get("source") or "")
+        layout, ref = self.transfers.catalog.resolve(key, body.get("sourceProfile"))
+        identity = self.transfers.identity(key)
+        token = uuid.uuid4().hex
+        path = private_dir(self.state_dir / "exports") / (token + ".crsync")
+
+        def run(progress):
+            result = export_bundle(layout, ref, path, str(body.get("password") or ""),
+                                   include_global=body.get("includeGlobal", True), progress=progress,
+                                   account_email=identity["email"])
+            result["downloadUrl"] = "/api/packages/" + path.name
+            return result
+
+        return self.jobs.start_task("export", run)
+
+    def open_account(self, body):
+        upload = str(body.get("uploadId") or "")
+        if not re.fullmatch(r"[a-f0-9]{32}", upload):
+            raise SyncError("无效的上传文件。")
+        path = self.state_dir / "uploads" / (upload + ".crsync")
+        if not path.is_file():
+            raise SyncError("上传文件不存在。")
+        token = uuid.uuid4().hex
+        destination = private_dir(self.state_dir / "imports") / token
+
+        def run(progress):
+            progress("package", "解密并校验迁移包", "running", None)
+            data = open_bundle(path, destination, str(body.get("password") or ""), progress=progress)
+            path.unlink()
+            return {"id": token, "operation": "import", "status": "success", "completedAt": iso_now(),
+                    "sourceAccountKey": "package:" + token, "targetCountAfter": data["indexCount"],
+                    "source": {"accountId": data["accountId"], "profileId": data["profileId"],
+                               **self.transfers.identity("package:" + token)},
+                    "context": data["context"]}
+
+        return self.jobs.start_task("import", run)
 
 
 def first_query_value(query: dict[str, list[str]], key: str, default: str | None) -> str | None:
@@ -345,7 +422,7 @@ def first_query_value(query: dict[str, list[str]], key: str, default: str | None
 
 
 class AppRequestHandler(BaseHTTPRequestHandler):
-    server_version = "ClaudeRecentSync/0.2"
+    server_version = "ClaudeRecentSync/0.3"
 
     @property
     def context(self) -> AppContext:
@@ -375,6 +452,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            self.require_local_host()
             if parsed.path == "/api/ping":
                 self.send_json({"app": "claude-recent-sync", "version": __version__})
                 return
@@ -388,6 +466,22 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         "backups": list_backups(self.context.layout),
                     }
                 )
+                return
+            if parsed.path.startswith("/api/packages/"):
+                name = parsed.path.rsplit("/", 1)[-1]
+                if not re.fullmatch(r"[a-f0-9]{32}\.crsync", name):
+                    raise SyncError("未知的迁移包。")
+                path = self.context.state_dir / "exports" / name
+                if not path.is_file():
+                    raise SyncError("迁移包不存在。")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="account-{name}"')
+                self.send_header("Content-Length", str(path.stat().st_size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                with path.open("rb") as stream:
+                    shutil.copyfileobj(stream, self.wfile)
                 return
             if parsed.path.startswith("/api/jobs/"):
                 job_id = parsed.path.rsplit("/", 1)[-1]
@@ -409,16 +503,46 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         try:
+            self.require_local_host()
             self.require_csrf()
+            if parsed.path == "/api/packages/upload":
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > MAX_BYTES or length > shutil.disk_usage(self.context.state_dir).free:
+                    raise SyncError("迁移包大小无效或磁盘空间不足。")
+                token = uuid.uuid4().hex
+                path = private_dir(self.context.state_dir / "uploads") / (token + ".crsync")
+                self.connection.settimeout(60)
+                try:
+                    with path.open("xb") as output:
+                        path.chmod(0o600)
+                        remaining = length
+                        while remaining:
+                            block = self.rfile.read(min(1024 ** 2, remaining))
+                            if not block:
+                                raise SyncError("迁移包上传中断。")
+                            output.write(block)
+                            remaining -= len(block)
+                except Exception:
+                    path.unlink(missing_ok=True)
+                    raise
+                self.send_json({"uploadId": token})
+                return
             body = self.read_json_body()
+            if parsed.path == "/api/accounts/email":
+                account = self.context.transfers.bind_email(str(body.get("accountKey") or ""), body.get("email"))
+                self.send_json({"account": account})
+                return
             if parsed.path == "/api/sync":
-                job_id = self.context.jobs.start_sync(
-                    source_value=str(body.get("source") or "previous"),
-                    target_value=str(body.get("target") or "current"),
-                    source_profile=optional_string(body.get("sourceProfile")),
-                    target_profile=optional_string(body.get("targetProfile")),
-                )
+                plan_id = str(body.get("planId") or "")
+                job_id = self.context.jobs.start_task(
+                    "sync", lambda progress: self.context.transfers.run(plan_id, progress))
                 self.send_json({"jobId": job_id}, status=HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/packages/export":
+                self.send_json({"jobId": self.context.export_account(body)}, status=HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/packages/open":
+                self.send_json({"jobId": self.context.open_account(body)}, status=HTTPStatus.ACCEPTED)
                 return
             if parsed.path == "/api/restore":
                 backup_id = optional_string(body.get("backupId"))
@@ -443,9 +567,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 if not path_value:
                     raise SyncError("Path is required.")
                 path = Path(path_value).expanduser().resolve()
-                backup_root = self.context.layout.backup_root.resolve()
-                if backup_root not in path.parents and path != backup_root:
-                    raise SyncError("Only synchronization backup paths can be revealed.")
+                allowed = [self.context.layout.backup_root.resolve(), (self.context.state_dir / "exports").resolve()]
+                if not any(root in path.parents or path == root for root in allowed):
+                    raise SyncError("只能打开本工具的备份或迁移包。")
                 subprocess.Popen(["open", "-R", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.send_json({"ok": True})
                 return
@@ -465,6 +589,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         host = self.headers.get("Host")
         if origin and host and urllib.parse.urlparse(origin).netloc != host:
             raise SyncError("Cross-origin requests are not allowed.")
+
+    def require_local_host(self) -> None:
+        host = urllib.parse.urlsplit("//" + self.headers.get("Host", "")).hostname
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise SyncError("只允许本机访问。")
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -533,7 +662,10 @@ def run_ui(
     open_browser: bool = True,
     claude_dir: Path | None = None,
     projects_dir: Path | None = None,
+    state_dir: Path | None = None,
 ) -> int:
+    if host not in {"127.0.0.1", "localhost"}:
+        raise SyncError("账号数据服务只支持本机地址 127.0.0.1 或 localhost。")
     existing = existing_server_url(host, port)
     if existing:
         if open_browser:
@@ -542,7 +674,7 @@ def run_ui(
 
     static_dir = Path(__file__).resolve().parent / "web_dist"
     layout = ClaudeLayout(claude_dir or default_claude_dir(), projects_dir or default_projects_dir())
-    context = AppContext(layout, port=port)
+    context = AppContext(layout, port=port, state_dir=state_dir)
     try:
         server = AppHTTPServer((host, port), context, static_dir)
     except OSError as exc:
@@ -570,6 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--claude-dir", type=Path, default=default_claude_dir())
     parser.add_argument("--projects-dir", type=Path, default=default_projects_dir())
+    parser.add_argument("--state-dir", type=Path, help="Local settings and migration package directory.")
     return parser
 
 
@@ -582,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
             open_browser=not args.no_browser,
             claude_dir=args.claude_dir,
             projects_dir=args.projects_dir,
+            state_dir=args.state_dir,
         )
     except SyncError as exc:
         print(f"error: {exc}", file=sys.stderr)

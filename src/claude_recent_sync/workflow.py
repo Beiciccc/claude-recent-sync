@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .cli import (
     ClaudeLayout,
@@ -39,7 +39,7 @@ SESSION_COMPARE_FIELDS = (
 SEMANTIC_FIELDS = frozenset(SESSION_COMPARE_FIELDS)
 RESUME_PATTERN = re.compile(r"(?:^|\s)--resume(?:=|\s+)([0-9a-fA-F-]{36})(?:\s|$)")
 
-ProgressCallback = Callable[[str, str, str, str | None], None]
+ProgressCallback = Callable[[str, str, str, Optional[str]], None]
 
 
 def app_state_dir() -> Path:
@@ -225,12 +225,12 @@ def stale_resume_ids(plan: dict[str, Any]) -> set[str]:
 def target_backend_processes(target: ProfileRef, resume_ids: set[str] | None = None) -> list[dict[str, Any]]:
     try:
         output = subprocess.check_output(
-            ["ps", "-Ao", "pid=,ppid=,comm=,args="],
+            ["ps", "-Ao", "pid=,ppid=,comm="],
             text=True,
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.CalledProcessError):
-        return []
+        raise SyncError("无法检查 Claude 后台进程，请稍后重试。")
 
     markers = (
         f"/{target.account_id}/{target.profile_id}/",
@@ -238,12 +238,17 @@ def target_backend_processes(target: ProfileRef, resume_ids: set[str] | None = N
     )
     matches: list[dict[str, Any]] = []
     for line in output.splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) != 4:
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
             continue
-        pid_text, ppid_text, command, args = parts
+        pid_text, ppid_text, command = parts
         executable = Path(command).name
         if executable not in {"claude", "disclaimer"}:
+            continue
+        try:
+            args = subprocess.check_output(["ps", "-p", pid_text, "-o", "args="], text=True,
+                                           stderr=subprocess.DEVNULL).strip()
+        except subprocess.CalledProcessError:
             continue
         if not any(marker in args for marker in markers):
             continue
@@ -292,6 +297,8 @@ def stop_target_backends(processes: list[dict[str, Any]], *, timeout: float = 2.
                 remaining.remove(pid)
         if remaining:
             time.sleep(0.05)
+    if remaining:
+        raise SyncError("旧会话后台尚未退出，请退出 Claude 后重试。")
     return stopped
 
 
@@ -326,7 +333,7 @@ def run_sync_workflow(
         if progress:
             progress(step_id, label, state, detail)
 
-    if source.label == target.label:
+    if source.session_dir.resolve() == target.session_dir.resolve():
         raise SyncError("Source and target profiles must be different.")
 
     started_at = iso_now()
@@ -525,6 +532,7 @@ def list_backups(layout: ClaudeLayout, limit: int = 100) -> list[dict[str, Any]]
                 "sourceCount": manifest.get("sourceCount", 0),
                 "targetCountBefore": manifest.get("targetCountBefore", len(target_files)),
                 "backupFileCount": len(target_files),
+                "contextFileCount": len(manifest.get("mutations", [])),
                 "counts": {
                     "added": len(manifest.get("added", [])),
                     "updated": len(manifest.get("updated", [])),

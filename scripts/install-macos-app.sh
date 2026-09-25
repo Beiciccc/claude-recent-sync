@@ -9,8 +9,8 @@ python_bin="${PYTHON_BIN:-$(command -v python3)}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
-"$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || {
-  print -u2 "Python 3.10 or newer is required."
+"$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' || {
+  print -u2 "Python 3.9 or newer is required."
   exit 1
 }
 
@@ -34,6 +34,7 @@ resources="$app_path/Contents/Resources"
 mkdir -p "$resources/bin" "$resources/runtime"
 ditto --norsrc "$repo_root/src/claude_recent_sync" "$resources/runtime/claude_recent_sync"
 find "$resources/runtime" -type d -name "__pycache__" -prune -exec rm -rf {} +
+find "$resources/runtime" -type f -name '* *.py' -delete
 cat > "$resources/bin/claude-recent-sync-ui" <<LAUNCHER
 #!/bin/zsh
 set -euo pipefail

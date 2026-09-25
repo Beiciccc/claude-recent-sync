@@ -230,6 +230,8 @@ class ClaudeLayout:
                 raise SyncError("Cannot resolve 'previous': no non-current account has session indexes.")
             return previous
         account_ids = self.account_ids()
+        if value in account_ids:
+            return value
         matches = [account_id for account_id in account_ids if account_id.startswith(value)]
         if len(matches) == 1:
             return matches[0]
@@ -243,6 +245,8 @@ class ClaudeLayout:
         account_id = self.resolve_account_alias(account_value)
         if profile_value:
             profile_ids = self.profile_ids_for_account(account_id)
+            if profile_value in profile_ids:
+                return self.profile_ref(account_id, profile_value)
             matches = [profile_id for profile_id in profile_ids if profile_id.startswith(profile_value)]
             if len(matches) == 1:
                 profile_id = matches[0]
@@ -669,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="claude-recent-sync",
         description="Mirror Claude Desktop Code Recents between local Claude accounts.",
     )
-    parser.add_argument("--version", action="version", version="claude-recent-sync 0.2.0")
+    parser.add_argument("--version", action="version", version="claude-recent-sync 0.3.0")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List detected Claude accounts and profile directories.")
