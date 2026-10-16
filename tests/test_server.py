@@ -59,6 +59,34 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(state["memoryPlan"]["files"])
         self.assertIn("planId", state)
 
+    def fetch_static(self, path):
+        try:
+            with urllib.request.urlopen(self.url + path, timeout=10) as response:
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, exc.headers, exc.read()
+
+    def test_static_cache_policy_and_missing_files(self):
+        static = Path(self.temp.name)
+        (static / "assets").mkdir()
+        (static / "index.html").write_text("<!doctype html>")
+        (static / "assets/index-abc123.js").write_text("console.log(1)")
+        (static / "theme-init.js").write_text("void 0")
+        status, headers, _ = self.fetch_static("/assets/index-abc123.js")
+        self.assertEqual(status, 200)
+        self.assertIn("immutable", headers["Cache-Control"])
+        for path in ("/", "/theme-init.js"):
+            status, headers, _ = self.fetch_static(path)
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Cache-Control"], "no-cache")
+        status, headers, body = self.fetch_static("/favicon.ico")
+        self.assertEqual(status, 404)
+        self.assertNotIn(b"<!doctype html>", body)
+        status, headers, body = self.fetch_static("/some/view")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"<!doctype html>")
+
     def test_remote_host_and_cross_origin_mutations_are_rejected(self):
         with self.assertRaises(urllib.error.HTTPError):
             self.request("/api/state", headers={"Host": "untrusted.example"})

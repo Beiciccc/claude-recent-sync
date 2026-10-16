@@ -611,7 +611,13 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if static_root not in candidate.parents and candidate != static_root:
             self.send_error_json(HTTPStatus.NOT_FOUND, "File not found.")
             return
+        # Only content-hashed bundle files may be cached forever; fixed names such as
+        # favicon.svg or theme-init.js must revalidate so updates reach the browser.
+        hashed_asset = candidate.is_file() and candidate.parent == static_root / "assets"
         if not candidate.is_file():
+            if Path(relative).suffix:
+                self.send_error_json(HTTPStatus.NOT_FOUND, "File not found.")
+                return
             candidate = self.static_dir / "index.html"
         if not candidate.is_file():
             self.send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "The web interface has not been built.")
@@ -621,7 +627,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(body)))
-        cache = "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable"
+        cache = "public, max-age=31536000, immutable" if hashed_asset else "no-cache"
         self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(

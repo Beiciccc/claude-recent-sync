@@ -38,7 +38,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const terminalStatuses = new Set(["success", "warning", "failed"]);
 const filters = [
@@ -84,21 +84,57 @@ function writeStored(key, value) {
   }
 }
 
-function applyTheme(theme) {
-  const root = document.documentElement;
-  if (theme === "light" || theme === "dark") root.dataset.theme = theme;
-  else delete root.dataset.theme;
+function normalizeTheme(value) {
+  return value === "light" || value === "dark" ? value : "system";
 }
 
-async function apiRequest(path, { method = "GET", body, token } = {}) {
-  const response = await fetch(path, {
-    method,
-    headers: {
-      ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { "X-CSRF-Token": token } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
+function applyTheme(theme) {
+  const root = document.documentElement;
+  const forced = theme === "light" || theme === "dark";
+  if (forced) root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  // Keep the browser chrome (Safari tab bar) in step with an explicit choice.
+  document.querySelectorAll('meta[name="theme-color"][data-scheme]').forEach((meta) => {
+    const scheme = meta.dataset.scheme;
+    meta.setAttribute("media", forced ? (scheme === theme ? "all" : "not all") : `(prefers-color-scheme: ${scheme})`);
   });
+}
+
+function useDialogFocus(ref, onEscape) {
+  // Captured during render, before the page behind the dialog becomes inert.
+  const [previous] = useState(() => document.activeElement);
+  const escapeRef = useRef(onEscape);
+  escapeRef.current = onEscape;
+  useEffect(() => {
+    const root = ref.current;
+    (root?.querySelector("[data-autofocus]") || root)?.focus();
+    const onKey = (event) => {
+      if (event.key === "Escape") escapeRef.current?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (previous instanceof HTMLElement && previous.isConnected && previous.getClientRects().length) previous.focus();
+    };
+  }, [ref, previous]);
+}
+
+const offlineMessage = "无法连接本机服务，请确认 Claude Recent Sync 仍在运行后重试。";
+
+async function apiRequest(path, { method = "GET", body, token } = {}) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { "X-CSRF-Token": token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(offlineMessage);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.error || `请求失败 (${response.status})`);
@@ -142,6 +178,16 @@ function formatRelative(value) {
   if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`;
   return formatDate(value);
+}
+
+function eventTitle(event) {
+  return historyLabels[event.operation] || (event.automatic ? "自动同步" : "账号同步");
+}
+
+function eventDestination(event, accounts) {
+  if (event.operation === "export") return "加密迁移包";
+  if (event.operation === "import") return "已载入";
+  return accountName(event.target, accounts);
 }
 
 function healthLabel(health) {
@@ -212,7 +258,7 @@ function AccountPanel({ role, data, accounts, value, onChange, onProfileChange, 
   const selected = accounts.find((account) => account.key === value);
   const name = selected ? accountName(selected) : null;
   return (
-    <section className={`account-panel ${isSource ? "account-source" : "account-target"}`} aria-label={isSource ? "来源账号" : "目标账号"}>
+    <div className={`account-panel ${isSource ? "account-source" : "account-target"}`}>
       <div className="account-heading">
         <span className="account-role">{isSource ? "来源账号" : "目标账号"}</span>
         <IconButton className="account-edit" label={isSource ? "编辑来源邮箱" : "编辑目标邮箱"} disabled={disabled || !selected}
@@ -238,10 +284,9 @@ function AccountPanel({ role, data, accounts, value, onChange, onProfileChange, 
         <span className="account-email">{name || "待选择邮箱"}</span>
         {selected && (
           <span className="account-tags">
-            <span className="tag">{selected.modeLabel}</span>
+            <span className={`tag ${selected.isPackage ? "tag-accent" : ""}`}>{selected.modeLabel}</span>
             {selected.isLoggedIn && <span className="tag tag-live"><span className="live-dot" />当前登录</span>}
             {selected.emailSource === "manual" && <span className="tag">手动绑定</span>}
-            {selected.isPackage && <span className="tag tag-accent">迁移包</span>}
           </span>
         )}
       </div>
@@ -263,12 +308,12 @@ function AccountPanel({ role, data, accounts, value, onChange, onProfileChange, 
           <strong>{data?.sessionCount ?? 0}</strong>
           <span>会话</span>
         </div>
-        <div>
+        <div className="metric-time">
           <strong>{formatRelative(data?.newestSessionIso)}</strong>
           <span>最后更新</span>
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -280,7 +325,7 @@ function SummaryStrip({ counts }) {
     ["unchanged", "一致", counts.unchanged],
   ];
   return (
-    <div className="summary-strip" aria-label="同步差异摘要">
+    <div className="summary-strip" role="group" aria-label="同步差异摘要">
       {items.map(([kind, label, value]) => (
         <div className={`summary-item summary-${kind}`} key={kind}>
           <span><i aria-hidden="true" />{label}</span>
@@ -306,12 +351,12 @@ function SessionSide({ data, emptyLabel }) {
   );
 }
 
-function SessionTable({ sessions }) {
+function SessionTable({ sessions, filtered, ready }) {
   if (!sessions.length) {
     return (
       <div className="empty-state">
-        <span className="empty-icon"><Search size={20} /></span>
-        <strong>没有匹配的会话</strong>
+        <span className="empty-icon">{filtered ? <Search size={20} /> : <FileCheck2 size={20} />}</span>
+        <strong>{filtered ? "没有匹配的会话" : !ready ? "选择来源与目标账号后显示差异" : "两端都还没有会话"}</strong>
       </div>
     );
   }
@@ -371,11 +416,18 @@ function MemoryTable({ plan }) {
 
 function SyncProgress({ job, onClose }) {
   if (!job) return null;
+  return <SyncProgressDialog job={job} onClose={onClose} />;
+}
+
+function SyncProgressDialog({ job, onClose }) {
+  const dialog = useRef(null);
   const finished = terminalStatuses.has(job.status);
   const successful = job.status === "success" || job.status === "warning";
+  const errorShownInStep = job.steps.some((step) => step.state === "failed" && step.detail === job.error);
+  useDialogFocus(dialog, () => { if (finished) onClose(); });
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="dialog progress-dialog" role="dialog" aria-modal="true" aria-label="同步进度">
+      <section className="dialog progress-dialog" role="dialog" aria-modal="true" aria-label="同步进度" ref={dialog} tabIndex={-1}>
         <div className="dialog-header">
           <div className={`dialog-symbol ${successful ? "dialog-success" : job.status === "failed" ? "dialog-failed" : ""}`}>
             {job.status === "failed" ? (
@@ -437,7 +489,7 @@ function SyncProgress({ job, onClose }) {
             </div>
           )}
         </div>
-        {job.error && <div className="job-error">{job.error}</div>}
+        {job.error && !errorShownInStep && <div className="job-error">{job.error}</div>}
         {job.result && (
           <div className="result-grid">
             <div>
@@ -493,21 +545,23 @@ function HistoryView({ data, accounts, onReveal, onRestore, busy }) {
                 {event.status === "failed" ? <AlertCircle size={15} /> : <CheckCircle2 size={15} />}
               </span>
               <div className="history-main">
-                <strong>{historyLabels[event.operation] || (event.automatic ? "自动同步" : "账号同步")}</strong>
-                <span>
-                  {accountName(event.source, accounts)} <ArrowRight size={12} /> {event.operation === "export" ? "加密迁移包" : event.operation === "import" ? "已载入" : accountName(event.target, accounts)}
+                <strong>{eventTitle(event)}</strong>
+                <span className="route-line" title={`${accountName(event.source, accounts)} → ${eventDestination(event, accounts)}`}>
+                  <span className="route-name">{accountName(event.source, accounts)}</span>
+                  <ArrowRight size={12} aria-hidden="true" />
+                  <span className="route-name">{eventDestination(event, accounts)}</span>
                 </span>
               </div>
-              <div className="history-counts">
+              <div className="history-meta">
                 {event.counts && (
-                  <>
+                  <div className="history-counts">
                     <span className="count-added">+{event.counts.added}</span>
                     <span className="count-updated">~{event.counts.updated}</span>
                     <span className="count-deleted">−{event.counts.deleted}</span>
-                  </>
+                  </div>
                 )}
+                <time>{formatDate(event.completedAt)}</time>
               </div>
-              <time>{formatDate(event.completedAt)}</time>
             </div>
           ))}
         </div>
@@ -528,7 +582,7 @@ function HistoryView({ data, accounts, onReveal, onRestore, busy }) {
               <span className="backup-icon"><ArchiveRestore size={16} /></span>
               <div className="backup-main">
                 <strong>{backup.backupFileCount} 个会话{backup.contextFileCount ? ` · ${backup.contextFileCount} 个上下文文件` : ""}</strong>
-                <span>{formatDate(backup.createdAt)} · {accountName(backup.target, accounts)}</span>
+                <span title={`${formatDate(backup.createdAt)} · ${accountName(backup.target, accounts)}`}>{formatDate(backup.createdAt)} · {accountName(backup.target, accounts)}</span>
               </div>
               <IconButton label="在 Finder 中显示" onClick={() => onReveal(backup.path)}>
                 <ExternalLink size={16} />
@@ -607,14 +661,15 @@ function SettingsView({ settings, onUpdate, saving, theme, onThemeChange }) {
         </div>
         <div className="theme-options" role="radiogroup" aria-label="界面外观">
           {themeChoices.map(([value, label, Icon]) => (
-            <button type="button" role="radio" aria-checked={theme === value} key={value}
-              className={`theme-option ${theme === value ? "active" : ""}`} onClick={() => onThemeChange(value)}>
+            <label key={value} className={`theme-option ${theme === value ? "active" : ""}`}>
+              <input type="radio" name="crs-theme" value={value} className="visually-hidden"
+                checked={theme === value} onChange={() => onThemeChange(value)} />
               <span className={`theme-preview theme-preview-${value}`} aria-hidden="true">
                 <span className="preview-sidebar" />
                 <span className="preview-main"><i /><i /><i /></span>
               </span>
-              <span className="theme-label"><Icon size={14} />{label}</span>
-            </button>
+              <span className="theme-label"><Icon size={14} aria-hidden="true" />{label}</span>
+            </label>
           ))}
         </div>
       </section>
@@ -626,6 +681,8 @@ function EmailDialog({ account, token, onClose, onSaved }) {
   const [email, setEmail] = useState(account.email || "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(null);
+  const dialog = useRef(null);
+  useDialogFocus(dialog, () => { if (!pending) onClose(); });
   const save = async (value) => {
     setPending(true);
     setError(null);
@@ -637,7 +694,7 @@ function EmailDialog({ account, token, onClose, onSaved }) {
     finally { setPending(false); }
   };
   return <div className="modal-backdrop">
-    <form className="dialog form-dialog email-dialog" role="dialog" aria-modal="true" aria-label="账号邮箱"
+    <form className="dialog form-dialog email-dialog" role="dialog" aria-modal="true" aria-label="账号邮箱" ref={dialog} tabIndex={-1}
       onSubmit={(event) => { event.preventDefault(); save(email.trim()); }}>
       <div className="form-dialog-heading"><h2>账号邮箱</h2>
         <IconButton label="关闭" disabled={pending} onClick={onClose}><X size={18} /></IconButton>
@@ -645,7 +702,7 @@ function EmailDialog({ account, token, onClose, onSaved }) {
       <p className="dialog-meta">{account.displayName} · {account.modeLabel} · {account.sessionCount} 个会话</p>
       <label className="field-label">邮箱地址
         <div className="input-field"><Mail size={16} />
-          <input type="email" aria-label="邮箱地址" autoComplete="email" maxLength={254} autoFocus required
+          <input type="email" aria-label="邮箱地址" autoComplete="email" maxLength={254} data-autofocus required
             value={email} onChange={(event) => setEmail(event.target.value)} disabled={pending} />
         </div>
       </label>
@@ -668,9 +725,11 @@ function PackageDialog({ mode, file, onClose, onSubmit, pending }) {
     ? Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, "0")).join("") : "");
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState(false);
+  const dialog = useRef(null);
+  useDialogFocus(dialog, () => { if (!pending) onClose(); });
   return <div className="modal-backdrop">
     <form className="dialog form-dialog package-dialog" role="dialog" aria-modal="true" aria-label={mode === "export" ? "导出账号迁移包" : "导入账号迁移包"}
-      onSubmit={(event) => { event.preventDefault(); onSubmit(password); }}>
+      ref={dialog} tabIndex={-1} onSubmit={(event) => { event.preventDefault(); onSubmit(password); }}>
       <div className="form-dialog-heading">
         <h2>{mode === "export" ? "导出账号迁移包" : "导入账号迁移包"}</h2>
         <IconButton label="关闭" onClick={onClose} disabled={pending}><X size={18} /></IconButton>
@@ -678,7 +737,7 @@ function PackageDialog({ mode, file, onClose, onSubmit, pending }) {
       {file && <p className="dialog-meta package-file"><Lock size={13} />{file.name}</p>}
       <label className="field-label">迁移口令
         <div className="input-field">
-          <input className="mono-input" aria-label="迁移口令" type={visible ? "text" : "password"} autoComplete="new-password" value={password}
+          <input className="mono-input" aria-label="迁移口令" data-autofocus type={visible ? "text" : "password"} autoComplete="new-password" value={password}
             minLength={12} required onChange={(event) => { setPassword(event.target.value); setCopied(false); }} />
           <IconButton label={visible ? "隐藏口令" : "显示口令"} onClick={() => setVisible(!visible)}>
             {visible ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -695,6 +754,26 @@ function PackageDialog({ mode, file, onClose, onSubmit, pending }) {
       </button>
     </form>
   </div>;
+}
+
+function RestoreDialog({ backup, targetName, onCancel, onConfirm }) {
+  const dialog = useRef(null);
+  useDialogFocus(dialog, onCancel);
+  return (
+    <div className="modal-backdrop">
+      <section className="dialog confirm-dialog" role="dialog" aria-modal="true" aria-label="确认恢复备份" ref={dialog} tabIndex={-1}>
+        <div className="confirm-icon"><ArchiveRestore size={22} /></div>
+        <h2>恢复这份同步前备份？</h2>
+        <p>{backup.backupFileCount} 个会话 · {formatDate(backup.createdAt)}</p>
+        <p>目标账号：{targetName}</p>
+        {backup.contextFileCount > 0 && <p>同时恢复 {backup.contextFileCount} 个上下文文件</p>}
+        <div className="confirm-actions">
+          <button type="button" className="secondary-button" data-autofocus onClick={onCancel}>取消</button>
+          <button type="button" className="primary-button" onClick={onConfirm}><ArchiveRestore size={16} />确认恢复</button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 export default function App() {
@@ -715,13 +794,19 @@ export default function App() {
   const [packagePending, setPackagePending] = useState(false);
   const [emailAccount, setEmailAccount] = useState(null);
   const [dirty, setDirty] = useState(true);
-  const [theme, setTheme] = useState(() => readStored(THEME_KEY, "system"));
+  const [theme, setTheme] = useState(() => normalizeTheme(readStored(THEME_KEY, "system")));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readStored(SIDEBAR_KEY, "") === "collapsed");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const requestNumber = useRef(0);
   const fileInput = useRef(null);
   const menuButton = useRef(null);
   const drawerClose = useRef(null);
+  const collapseButton = useRef(null);
+  const expandButton = useRef(null);
+  const sidebarRef = useRef(null);
+  const mainRef = useRef(null);
+  const sidebarToggled = useRef(false);
+  const drawerWasOpen = useRef(false);
   const [selection, setSelection] = useState({
     source: null,
     sourceProfile: null,
@@ -767,20 +852,22 @@ export default function App() {
     }
   }, [selection]);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async ({ quiet = false } = {}) => {
     try {
       setHistoryData(await apiRequest("/api/history"));
     } catch (requestError) {
-      setError(requestError.message);
+      if (!quiet) setError(requestError.message);
     }
   }, []);
 
   useEffect(() => {
     loadState(selection);
+    // The sidebar's recent tasks need history once; the history page reloads it on entry.
+    loadHistory({ quiet: true });
   }, []);
 
   useEffect(() => {
-    loadHistory();
+    if (view === "history") loadHistory();
   }, [view, loadHistory]);
 
   useEffect(() => {
@@ -789,17 +876,53 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key === THEME_KEY) setTheme(normalizeTheme(event.newValue));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
     writeStored(SIDEBAR_KEY, sidebarCollapsed ? "collapsed" : null);
+    if (sidebarToggled.current) {
+      sidebarToggled.current = false;
+      (sidebarCollapsed ? expandButton : collapseButton).current?.focus();
+    }
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!drawerOpen) return undefined;
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const onChange = (event) => {
+      if (!event.matches) setDrawerOpen(false);
+    };
+    narrow.addEventListener("change", onChange);
+    return () => narrow.removeEventListener("change", onChange);
+  }, []);
+
+  const modalOpen = Boolean(job || restoreCandidate || packageDialog || emailAccount);
+
+  // Layout effect so the page is interactive again before a closing dialog restores focus.
+  useLayoutEffect(() => {
+    if (mainRef.current) mainRef.current.inert = drawerOpen || modalOpen;
+    if (sidebarRef.current) sidebarRef.current.inert = modalOpen;
+    document.documentElement.classList.toggle("drawer-lock", drawerOpen);
+  }, [drawerOpen, modalOpen, loading, state === null]);
+
+  useEffect(() => {
+    if (!drawerOpen) {
+      if (drawerWasOpen.current) {
+        drawerWasOpen.current = false;
+        if (window.matchMedia("(max-width: 900px)").matches && !document.querySelector(".modal-backdrop")) {
+          menuButton.current?.focus();
+        }
+      }
+      return undefined;
+    }
+    drawerWasOpen.current = true;
     drawerClose.current?.focus();
     const onKey = (event) => {
-      if (event.key === "Escape") {
-        setDrawerOpen(false);
-        menuButton.current?.focus();
-      }
+      if (event.key === "Escape" && !document.querySelector(".modal-backdrop")) setDrawerOpen(false);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -871,7 +994,8 @@ export default function App() {
           body: { source: selection.source, sourceProfile: selection.sourceProfile, password, includeGlobal: selection.includeGlobal } });
       } else {
         const upload = await fetch("/api/packages/upload", { method: "POST", body: packageDialog.file,
-          headers: { "Content-Type": "application/octet-stream", "X-CSRF-Token": state.csrfToken } });
+          headers: { "Content-Type": "application/octet-stream", "X-CSRF-Token": state.csrfToken } })
+          .catch(() => { throw new Error(offlineMessage); });
         const uploaded = await upload.json();
         if (!upload.ok) throw new Error(uploaded.error || "迁移包上传失败");
         payload = await apiRequest("/api/packages/open", { method: "POST", token: state.csrfToken,
@@ -970,14 +1094,18 @@ export default function App() {
   const sourceValue = selection.source;
   const targetValue = selection.target;
   const busy = job && !terminalStatuses.has(job.status);
-  const sameProfile = sourceValue === targetValue && state.source?.profileId === state.target?.profileId;
+  const noAccounts = state.accounts.length === 0;
+  const bothChosen = Boolean(state.source && state.target);
+  const sameProfile = bothChosen && sourceValue === targetValue && state.source.profileId === state.target.profileId;
   const sourcePackage = state.accounts.find((account) => account.key === sourceValue)?.isPackage;
   const changedCount = state.plan.counts.added + state.plan.counts.updated + state.plan.counts.deleted;
   const totalChanges = changedCount + (state.memoryPlan?.changed || 0);
-  const loggedIn = state.accounts.find((account) => account.isLoggedIn && !account.isPackage);
+  const loggedInAccounts = state.accounts.filter((account) => account.isLoggedIn && !account.isPackage);
+  const loggedIn = loggedInAccounts[0];
   const recentEvents = historyData?.events.slice(0, 6) || [];
   const [title, subtitle] = viewIntro[view];
   const exportDisabled = busy || refreshing || dirty || !state.source || sourcePackage;
+  const railLabel = (label) => (sidebarCollapsed ? { "aria-label": label, title: label } : {});
 
   const navigate = (next) => {
     setView(next);
@@ -985,32 +1113,38 @@ export default function App() {
     window.scrollTo({ top: 0 });
   };
 
+  const toggleSidebar = (collapsed) => {
+    sidebarToggled.current = true;
+    setSidebarCollapsed(collapsed);
+  };
+
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${drawerOpen ? "drawer-open" : ""}`}>
-      <aside className="sidebar" id="app-sidebar" aria-label="侧栏">
+      <aside className="sidebar" id="app-sidebar" aria-label="侧栏" ref={sidebarRef}
+        role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen || undefined}>
         <div className="sidebar-header">
-          <div className="brand">
+          <div className="brand" title="Claude Recent Sync">
             <AppMark size={22} />
             <span className="brand-name">Claude Recent Sync</span>
           </div>
-          <IconButton className="sidebar-collapse" label="收起侧栏" onClick={() => setSidebarCollapsed(true)}>
+          <IconButton className="sidebar-collapse" label="收起侧栏" ref={collapseButton} aria-controls="app-sidebar"
+            aria-expanded={!sidebarCollapsed} onClick={() => toggleSidebar(true)}>
             <PanelLeftClose size={18} />
           </IconButton>
-          <IconButton className="drawer-close" label="关闭侧栏" ref={drawerClose}
-            onClick={() => { setDrawerOpen(false); menuButton.current?.focus(); }}>
+          <IconButton className="drawer-close" label="关闭侧栏" ref={drawerClose} onClick={() => setDrawerOpen(false)}>
             <X size={18} />
           </IconButton>
         </div>
 
         <div className="sidebar-actions">
-          <button type="button" className="sidebar-primary" disabled={busy || refreshing}
+          <button type="button" className="sidebar-primary" disabled={busy || refreshing} {...railLabel("导入迁移包")}
             onClick={() => { setDrawerOpen(false); fileInput.current.click(); }}>
             <span className="sidebar-primary-icon"><Upload size={14} strokeWidth={2.2} /></span>
-            导入迁移包
+            <span className="sidebar-text">导入迁移包</span>
           </button>
-          <button type="button" className="sidebar-item" disabled={exportDisabled}
+          <button type="button" className="sidebar-item" disabled={exportDisabled} {...railLabel("导出来源账号")}
             onClick={() => { setDrawerOpen(false); setPackageDialog({ mode: "export" }); }}>
-            <Download size={16} />导出来源账号
+            <Download size={16} /><span className="sidebar-text">导出来源账号</span>
           </button>
           <input ref={fileInput} type="file" accept=".crsync" className="file-input" aria-label="账号迁移包文件"
             onChange={(event) => { const file = event.target.files?.[0]; if (file) setPackageDialog({ mode: "import", file }); event.target.value = ""; }} />
@@ -1019,10 +1153,16 @@ export default function App() {
         <nav className="sidebar-nav" aria-label="视图">
           {views.map(({ id, label, icon: Icon }) => (
             <button type="button" key={id} className={`sidebar-item ${view === id ? "active" : ""}`}
-              aria-current={view === id ? "page" : undefined} onClick={() => navigate(id)}>
+              aria-current={view === id ? "page" : undefined} onClick={() => navigate(id)}
+              {...railLabel(id === "sync" && totalChanges > 0 ? `${label}，${totalChanges} 项待同步` : label)}>
               <Icon size={16} />
-              {label}
-              {id === "sync" && totalChanges > 0 && <span className="nav-count">{totalChanges}</span>}
+              <span className="sidebar-text">{label}</span>
+              {id === "sync" && totalChanges > 0 && (
+                <>
+                  <span className="nav-count" aria-hidden="true">{totalChanges}</span>
+                  <span className="visually-hidden">，{totalChanges} 项待同步</span>
+                </>
+              )}
             </button>
           ))}
         </nav>
@@ -1032,21 +1172,24 @@ export default function App() {
           {recentEvents.length === 0 && <span className="sidebar-empty">尚无运行记录</span>}
           {recentEvents.map((event) => (
             <button type="button" className="recent-item" key={event.jobId || event.id}
-              title={`${formatDate(event.completedAt)} · ${accountName(event.source, state.accounts)} → ${event.operation === "export" ? "加密迁移包" : accountName(event.target, state.accounts)}`}
+              title={`${formatDate(event.completedAt)} · ${accountName(event.source, state.accounts)} → ${eventDestination(event, state.accounts)}`}
               onClick={() => navigate("history")}>
               <span className={`recent-dot recent-${event.status}`} aria-hidden="true" />
-              <span className="recent-title">{historyLabels[event.operation] || (event.automatic ? "自动同步" : "账号同步")}</span>
+              <span className="recent-title">{eventTitle(event)}</span>
               <span className="recent-time">{formatRelative(event.completedAt)}</span>
             </button>
           ))}
         </div>
 
         <div className="sidebar-footer">
-          <div className="sidebar-account">
+          <div className="sidebar-account"
+            title={loggedInAccounts.map((account) => `${accountName(account)} · ${account.modeLabel}`).join("\n") || undefined}>
             <Avatar label={loggedIn ? accountName(loggedIn) : null} />
             <div>
               <strong>{loggedIn ? accountName(loggedIn) : "未检测到登录账号"}</strong>
-              <span>{loggedIn ? `${loggedIn.modeLabel} · 当前登录` : "打开 Claude Code 后刷新"}</span>
+              <span>{loggedIn
+                ? `${loggedInAccounts.map((account) => account.modeLabel).join(" / ")} · 当前登录`
+                : "打开 Claude Code 后刷新"}</span>
             </div>
           </div>
           <div className="sidebar-meta">
@@ -1057,20 +1200,21 @@ export default function App() {
       </aside>
       <div className="drawer-scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />
 
-      <div className="main-column">
+      <div className="main-column" ref={mainRef}>
         <header className="main-header">
           <IconButton className="menu-button" label="打开侧栏" ref={menuButton} aria-controls="app-sidebar"
             aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>
             <Menu size={18} />
           </IconButton>
           {sidebarCollapsed && (
-            <IconButton className="expand-button" label="展开侧栏" onClick={() => setSidebarCollapsed(false)}>
+            <IconButton className="expand-button" label="展开侧栏" ref={expandButton} aria-controls="app-sidebar"
+              aria-expanded={false} onClick={() => toggleSidebar(false)}>
               <PanelLeftOpen size={18} />
             </IconButton>
           )}
           <div className="header-title">
             <AppMark size={18} className="header-mark" />
-            <span>{views.find((item) => item.id === view)?.label}</span>
+            <span className="header-view">{views.find((item) => item.id === view)?.label}</span>
             {view === "sync" && state.source && state.target && (
               <span className="header-route">{accountName(state.source, state.accounts)} → {accountName(state.target, state.accounts)}</span>
             )}
@@ -1079,7 +1223,7 @@ export default function App() {
             <span className="local-status"><span />本机运行</span>
             <IconButton
               label="刷新"
-              onClick={() => { loadState(selection); loadHistory(); }}
+              onClick={() => { loadState(selection); loadHistory({ quiet: view !== "history" }); }}
               disabled={refreshing || busy}
             >
               <RefreshCw className={refreshing ? "spin" : ""} size={17} />
@@ -1123,7 +1267,7 @@ export default function App() {
                       const next = { ...selection, source: selection.target, sourceProfile: selection.targetProfile,
                         target: selection.source, targetProfile: selection.sourceProfile, mappings: {} };
                       setSelection(next); loadState(next);
-                    }}><ArrowLeftRight size={16} /></IconButton> : <span className="route-direction" aria-label="从迁移包同步到目标账号"><ArrowRight size={16} /></span>}
+                    }}><ArrowLeftRight size={16} /></IconButton> : <span className="route-direction" role="img" aria-label="从迁移包同步到目标账号"><ArrowRight size={16} /></span>}
                   </div>
                   <AccountPanel
                     role="target"
@@ -1137,7 +1281,7 @@ export default function App() {
                   />
                 </div>
                 <div className="route-footer">
-                  <div className="context-chips" aria-label="记忆范围">
+                  <div className="context-chips" role="group" aria-label="记忆范围">
                     <span className="chip"><Library size={14} /><strong>{state.context?.memoryFileCount ?? 0}</strong>项目记忆</span>
                     <span className="chip"><Folder size={14} /><strong>{state.context?.projectCount ?? 0}</strong>关联项目</span>
                     <span className="chip"><FileCheck2 size={14} /><strong>{state.context?.transcriptCount ?? 0}</strong>会话转录</span>
@@ -1148,7 +1292,7 @@ export default function App() {
                   </div>
                   <div className="sync-action">
                     <span className="sync-state">
-                      {sameProfile ? <AlertCircle size={15} /> : changedCount ? <Sparkles size={15} /> : <ShieldCheck size={15} />}
+                      {!bothChosen ? <Circle size={15} /> : sameProfile ? <AlertCircle size={15} /> : changedCount ? <Sparkles size={15} /> : <ShieldCheck size={15} />}
                       {!state.source || !state.target ? "待选择账号" : sameProfile ? "来源与目标相同" : totalChanges ? `${totalChanges} 项待同步`
                         : !state.target?.health?.ok ? "转录待补全" : "两端已一致"}
                     </span>
@@ -1161,7 +1305,11 @@ export default function App() {
                 </div>
               </section>
 
-              {state.blockers.length > 0 && !sameProfile && <div className="callout callout-danger"><AlertCircle size={16} />{state.blockers.join(" ")}</div>}
+              {state.blockers.length > 0 && !sameProfile && (
+                <div className={`callout ${noAccounts ? "callout-warning" : bothChosen ? "callout-danger" : "callout-neutral"}`}>
+                  {noAccounts || bothChosen ? <AlertCircle size={16} /> : <Circle size={14} />}{state.blockers.join(" ")}
+                </div>
+              )}
               {sourcePackage && <div className="callout callout-warning"><AlertCircle size={16} />导入会更新相关项目的共享记忆。全局记忆启用时，影响本机全部账号。</div>}
               {state.projectMappings?.length > 0 && (
                 <details className="mapping-panel" open={state.missingPaths?.length > 0}>
@@ -1181,12 +1329,12 @@ export default function App() {
 
               <SummaryStrip counts={state.plan.counts} />
 
-              <div className="view-switch" role="tablist" aria-label="比较内容">
-                <button type="button" role="tab" aria-selected={syncTab === "sessions"} className={syncTab === "sessions" ? "active" : ""}
+              <div className="view-switch" role="group" aria-label="比较内容">
+                <button type="button" aria-pressed={syncTab === "sessions"} className={syncTab === "sessions" ? "active" : ""}
                   onClick={() => setSyncTab("sessions")}>
                   <FileCheck2 size={15} />会话比较<span>{state.plan.counts.all}</span>
                 </button>
-                <button type="button" role="tab" aria-selected={syncTab === "memory"} className={syncTab === "memory" ? "active" : ""}
+                <button type="button" aria-pressed={syncTab === "memory"} className={syncTab === "memory" ? "active" : ""}
                   onClick={() => setSyncTab("memory")}>
                   <Library size={15} />记忆比较<span>{state.memoryPlan?.files?.length ?? 0}</span>
                 </button>
@@ -1195,7 +1343,7 @@ export default function App() {
               {syncTab === "sessions" && (
                 <section className="comparison-panel" aria-label="会话比较">
                   <div className="comparison-toolbar">
-                    <div className="filter-pills" aria-label="按状态筛选">
+                    <div className="filter-pills" role="group" aria-label="按状态筛选">
                       {filters.map(([value, label]) => (
                         <button
                           type="button"
@@ -1219,7 +1367,7 @@ export default function App() {
                       )}
                     </label>
                   </div>
-                  <SessionTable sessions={filteredSessions} />
+                  <SessionTable sessions={filteredSessions} filtered={Boolean(search.trim()) || filter !== "all"} ready={bothChosen} />
                 </section>
               )}
               {syncTab === "memory" && <MemoryTable plan={state.memoryPlan} />}
@@ -1257,19 +1405,8 @@ export default function App() {
       />
 
       {restoreCandidate && (
-        <div className="modal-backdrop">
-          <section className="dialog confirm-dialog" role="dialog" aria-modal="true" aria-label="确认恢复备份">
-            <div className="confirm-icon"><ArchiveRestore size={22} /></div>
-            <h2>恢复这份同步前备份？</h2>
-            <p>{restoreCandidate.backupFileCount} 个会话 · {formatDate(restoreCandidate.createdAt)}</p>
-            <p>目标账号：{accountName(restoreCandidate.target, state.accounts)}</p>
-            {restoreCandidate.contextFileCount > 0 && <p>同时恢复 {restoreCandidate.contextFileCount} 个上下文文件</p>}
-            <div className="confirm-actions">
-              <button type="button" className="secondary-button" onClick={() => setRestoreCandidate(null)}>取消</button>
-              <button type="button" className="primary-button" onClick={restoreBackup}><ArchiveRestore size={16} />确认恢复</button>
-            </div>
-          </section>
-        </div>
+        <RestoreDialog backup={restoreCandidate} targetName={accountName(restoreCandidate.target, state.accounts)}
+          onCancel={() => setRestoreCandidate(null)} onConfirm={restoreBackup} />
       )}
 
       {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
