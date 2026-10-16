@@ -2,15 +2,26 @@
 
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-111111?logo=apple)](https://www.apple.com/macos/)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-16735e.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-d97757.svg)](LICENSE)
 
 [简体中文](docs/README.zh-CN.md)
 
 Choose a **source account** and a **target account** to transfer Claude Desktop Code session indexes, conversation context, and project memory. Use the same interface on one Mac or move an encrypted account package to another Mac.
 
-![Account-based context transfer](docs/dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
+  <img alt="Account-based context transfer" src="docs/dashboard.png">
+</picture>
 
-## Version 0.3
+## Version 0.4
+
+- A refreshed interface in the style of claude.ai: warm ivory canvas, clay accent, serif headings, and quiet hairline cards.
+- Sidebar navigation for **账号同步 (Sync)**, **运行记录 (History)**, and **设置 (Settings)**, with recent tasks and the signed-in account at a glance. The sidebar collapses on desktop and becomes a drawer in narrow windows.
+- Source and target accounts sit in one composer-style card with the memory scope and a single sync button.
+- Light, dark, or follow-system appearance under **设置 → 外观 (Appearance)**.
+- New app icon and browser favicon.
+
+### Carried over from 0.3
 
 - Accounts are shown by email, separately from their organization/workspace profiles.
 - Ordinary `Claude` and third-party `Claude-3p` deployments have distinct identities.
@@ -38,7 +49,7 @@ The app opens its local interface at `http://127.0.0.1:47631`. The installer bun
 
 1. Select the email under **来源账号 (Source account)** and **目标账号 (Target account)**.
 2. Select the organization/workspace under each account. Check the ordinary/third-party mode label.
-3. Review **会话比较 (Sessions)** and **记忆比较 (Memory)**.
+3. Review **会话比较 (Sessions)** and **记忆比较 (Memory)** below the summary.
 4. Click **同步到目标账号 (Sync to target account)**.
 5. Wait for validation and the delayed check to finish.
 
@@ -60,7 +71,7 @@ On the source Mac:
 
 1. Select the source account and its workspace.
 2. Choose whether to include global memory.
-3. Click **导出来源账号 (Export source account)**.
+3. Click **导出来源账号 (Export source account)** in the sidebar.
 4. Record the migration passphrase, then download the encrypted `.crsync` file.
 
 Move that file through a channel of your choice, such as a removable drive, AirDrop, or iCloud Drive. The application does not automatically upload it anywhere.
@@ -68,7 +79,7 @@ Move that file through a channel of your choice, such as a removable drive, AirD
 On the destination Mac:
 
 1. Install this app and sign in to the intended Claude account. Open Code once so the account/workspace can be discovered.
-2. Click **导入迁移包 (Import package)**, select the file, and enter its passphrase.
+2. Click **导入迁移包 (Import package)** in the sidebar, select the file, and enter its passphrase.
 3. The imported account snapshot becomes the source. Select the destination account and workspace.
 4. Review the session and memory differences. Correct any missing project paths in **项目路径映射 (Project path mapping)**.
 5. Click **同步到目标账号**.
@@ -104,7 +115,7 @@ After opening a package, its decrypted working copy is kept in the app's private
 
 ## Backups and Restore
 
-The **运行记录 (History)** tab lists operations and backups. Cross-Mac import backs up both the target indexes and every context or memory file it changes. A failed write or validation rolls those changes back. Restoring a backup creates another backup of the current state first.
+The **运行记录 (History)** page lists operations and backups. Cross-Mac import backs up both the target indexes and every context or memory file it changes. A failed write or validation rolls those changes back. Restoring a backup creates another backup of the current state first.
 
 Default locations:
 
@@ -114,7 +125,7 @@ Default locations:
 ~/.claude/claude-recent-sync/imports/
 ```
 
-The ordinary-mode account-switch watcher and launch-at-login controls remain optional and off by default. Manual transfers always use the accounts explicitly selected in the interface.
+The ordinary-mode account-switch watcher and launch-at-login controls in **设置 (Settings)** remain optional and off by default. Manual transfers always use the accounts explicitly selected in the interface.
 
 ## CLI Compatibility
 
@@ -139,12 +150,12 @@ npm ci
 npm run build
 ```
 
-The production bundle is stored in `src/claude_recent_sync/web_dist`. Development servers can use `--claude-dir`, `--projects-dir`, and `--state-dir` to isolate all test data and backups.
+The production bundle is stored in `src/claude_recent_sync/web_dist`. The local server's Content-Security-Policy allows only same-origin resources, so the interface uses bundled assets and system fonts. Development servers can use `--claude-dir`, `--projects-dir`, and `--state-dir` to isolate all test data and backups.
 
 Tests cover email detection and persistence, account/profile selection, deployment separation, stale previews, transcript and memory integrity, package authentication, archive path rejection, path mapping, rollback, restore, and the HTTP export/import flow.
 
 ## Limits
 
-This is an unofficial utility, not affiliated with Anthropic. It relies on Claude Desktop's local storage layout, which may change with future releases. Back up important records, verify the selected direction, and finish active Claude work before replacing its local records.
+This is an unofficial utility, not affiliated with Anthropic. Its interface borrows the general look of claude.ai but uses its own artwork. It relies on Claude Desktop's local storage layout, which may change with future releases. Back up important records, verify the selected direction, and finish active Claude work before replacing its local records.
 
 [MIT License](LICENSE)
