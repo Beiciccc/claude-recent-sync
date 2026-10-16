@@ -422,7 +422,7 @@ def first_query_value(query: dict[str, list[str]], key: str, default: str | None
 
 
 class AppRequestHandler(BaseHTTPRequestHandler):
-    server_version = "ClaudeRecentSync/0.3"
+    server_version = "ClaudeRecentSync/0.4"
 
     @property
     def context(self) -> AppContext:

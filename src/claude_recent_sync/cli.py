@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import __version__
+
 
 SESSION_GLOB = "local_*.json"
 NON_ACCOUNT_DIRS = {"skills-plugin"}
@@ -673,7 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="claude-recent-sync",
         description="Mirror Claude Desktop Code Recents between local Claude accounts.",
     )
-    parser.add_argument("--version", action="version", version="claude-recent-sync 0.3.0")
+    parser.add_argument("--version", action="version", version=f"claude-recent-sync {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List detected Claude accounts and profile directories.")
