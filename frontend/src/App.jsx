@@ -100,9 +100,46 @@ function applyTheme(theme) {
   });
 }
 
+function canFocus(element) {
+  if (!(element instanceof HTMLElement) || !element.isConnected || element.disabled || element.closest("[inert]")) return false;
+  return element.checkVisibility
+    ? element.checkVisibility({ visibilityProperty: true })
+    : element.getClientRects().length > 0;
+}
+
+// The element that opened the outermost dialog, handed on when one dialog replaces another.
+let dialogTrigger = null;
+
+function restoreFocus(previous) {
+  const heading = () => document.querySelector(".page-intro h1");
+  let tries = 0;
+  const attempt = () => {
+    if (document.querySelector(".modal-backdrop")) return; // A follow-up dialog owns focus now.
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== heading()) return; // Focus already moved on.
+    if (canFocus(previous)) {
+      previous.focus();
+      return;
+    }
+    // A trigger disabled while the page refreshes comes back shortly; wait on the page heading.
+    if (previous?.isConnected && previous.disabled && tries++ < 30) {
+      heading()?.focus({ preventScroll: true });
+      window.setTimeout(attempt, 100);
+      return;
+    }
+    [document.querySelector(".menu-button"), heading()].find(canFocus)?.focus({ preventScroll: true });
+  };
+  window.requestAnimationFrame(attempt);
+}
+
 function useDialogFocus(ref, onEscape) {
   // Captured during render, before the page behind the dialog becomes inert.
-  const [previous] = useState(() => document.activeElement);
+  const [previous] = useState(() => {
+    const active = document.activeElement;
+    if (active?.closest?.(".modal-backdrop")) return dialogTrigger;
+    dialogTrigger = active;
+    return active;
+  });
   const escapeRef = useRef(onEscape);
   escapeRef.current = onEscape;
   useEffect(() => {
@@ -114,7 +151,7 @@ function useDialogFocus(ref, onEscape) {
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
-      if (previous instanceof HTMLElement && previous.isConnected && previous.getClientRects().length) previous.focus();
+      restoreFocus(previous);
     };
   }, [ref, previous]);
 }
@@ -351,12 +388,12 @@ function SessionSide({ data, emptyLabel }) {
   );
 }
 
-function SessionTable({ sessions, filtered, ready }) {
+function SessionTable({ sessions, filtered, ready, noAccounts }) {
   if (!sessions.length) {
     return (
       <div className="empty-state">
         <span className="empty-icon">{filtered ? <Search size={20} /> : <FileCheck2 size={20} />}</span>
-        <strong>{filtered ? "没有匹配的会话" : !ready ? "选择来源与目标账号后显示差异" : "两端都还没有会话"}</strong>
+        <strong>{filtered ? "没有匹配的会话" : noAccounts ? "未检测到可用账号" : !ready ? "选择来源与目标账号后显示差异" : "两端都还没有会话"}</strong>
       </div>
     );
   }
@@ -872,8 +909,12 @@ export default function App() {
 
   useEffect(() => {
     applyTheme(theme);
-    writeStored(THEME_KEY, theme === "system" ? null : theme);
   }, [theme]);
+
+  const chooseTheme = (value) => {
+    setTheme(value);
+    writeStored(THEME_KEY, value === "system" ? null : value);
+  };
 
   useEffect(() => {
     const onStorage = (event) => {
@@ -894,7 +935,15 @@ export default function App() {
   useEffect(() => {
     const narrow = window.matchMedia("(max-width: 900px)");
     const onChange = (event) => {
-      if (!event.matches) setDrawerOpen(false);
+      if (event.matches) return;
+      const hadFocus = sidebarRef.current?.contains(document.activeElement);
+      setDrawerOpen(false);
+      if (hadFocus) {
+        window.requestAnimationFrame(() => {
+          if (canFocus(document.activeElement)) return;
+          [collapseButton.current, expandButton.current, document.querySelector(".sidebar-nav .active")].find(canFocus)?.focus();
+        });
+      }
     };
     narrow.addEventListener("change", onChange);
     return () => narrow.removeEventListener("change", onChange);
@@ -1233,7 +1282,7 @@ export default function App() {
 
         <main className="workspace">
           <div className="page-intro">
-            <h1>
+            <h1 tabIndex={-1}>
               {view === "sync" && <AppMark size={30} className="intro-mark" />}
               {title}
             </h1>
@@ -1367,7 +1416,7 @@ export default function App() {
                       )}
                     </label>
                   </div>
-                  <SessionTable sessions={filteredSessions} filtered={Boolean(search.trim()) || filter !== "all"} ready={bothChosen} />
+                  <SessionTable sessions={filteredSessions} filtered={Boolean(search.trim()) || filter !== "all"} ready={bothChosen} noAccounts={noAccounts} />
                 </section>
               )}
               {syncTab === "memory" && <MemoryTable plan={state.memoryPlan} />}
@@ -1386,7 +1435,7 @@ export default function App() {
 
           {view === "settings" && (
             <SettingsView settings={state.settings} onUpdate={updateSettings} saving={settingsSaving}
-              theme={theme} onThemeChange={setTheme} />
+              theme={theme} onThemeChange={chooseTheme} />
           )}
 
           <p className="workspace-footnote">
